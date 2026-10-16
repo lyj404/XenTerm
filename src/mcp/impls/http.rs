@@ -135,7 +135,7 @@ impl rmcp::Service<RoleServer> for HttpService {
 impl ServerHandler for HttpTools {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
-            .with_server_info(Implementation::new("xenterm", env!("CARGO_PKG_VERSION")))
+            .with_server_info(Implementation::new("xenterm", crate::version::VERSION))
             .with_instructions("Access the operator-authorized XenTerm profile. Session metadata responses omit credential values; enabled command and file tools have the documented OS-account access. OAuth does not override local tool permissions.")
     }
 
@@ -337,14 +337,23 @@ async fn authenticated_guard(state: Arc<Boundary>, request: Request, next: Next)
         }
         _ => return unauthorized(&state),
     };
-    if !crate::config::ConfigStore::load()
-        .map(|store| store.mcp_enabled())
-        .unwrap_or(false)
-    {
-        return failure(
-            StatusCode::FORBIDDEN,
-            "MCP is disabled or the selected profile is unavailable",
-        );
+    // Keep configuration failures distinct from an explicit disable while
+    // denying both. Only authenticated callers receive this profile diagnostic;
+    // never include the underlying error's paths or credential details.
+    match crate::config::ConfigStore::load().map(|store| store.mcp_enabled()) {
+        Ok(true) => {}
+        Ok(false) => {
+            return failure(
+                StatusCode::FORBIDDEN,
+                "MCP is disabled in Settings > MCP & permissions",
+            );
+        }
+        Err(_) => {
+            return failure(
+                StatusCode::SERVICE_UNAVAILABLE,
+                super::server::CONFIG_UNAVAILABLE_MESSAGE,
+            );
+        }
     }
     if request
         .headers()
